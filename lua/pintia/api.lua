@@ -152,7 +152,9 @@ local function unwrap(body, status)
     return nil, { code = -1, error = 'Api.InvalidResponse', message = 'unexpected (non-JSON) response' }
   end
   if status and status >= 400 then
-    return nil, { code = status, error = 'Http.' .. tostring(status), message = data.message or ('HTTP ' .. status) }
+    local msg = data.message or (type(data.error) == 'table' and data.error.message) or ('HTTP ' .. status)
+    local code = type(data.error) == 'table' and (data.error.code or data.error.message) or nil
+    return nil, { code = status, error = code or ('Http.' .. tostring(status)), message = msg }
   end
   if data.error and type(data.error) == 'table' and data.error.code then
     return nil, { code = data.error.code, error = data.error.code, message = data.error.message or 'request failed' }
@@ -189,10 +191,60 @@ local function build_argv(opts)
     args[#args + 1] = '--data-raw'
     args[#args + 1] = vim.json.encode(opts.body)
   end
+  if opts.headers_file then
+    args[#args + 1] = '-D'
+    args[#args + 1] = opts.headers_file
+  end
   args[#args + 1] = build_url(opts.path, opts.query)
   local argv = curl_base()
   vim.list_extend(argv, args)
+  if opts.no_cookie then
+    return argv
+  end
   return with_cookie(argv)
+end
+
+--- Async request capturing response headers; cb(err, data, headers_text).
+function M.request_with_headers(opts, cb)
+  local tmp = vim.fn.tempname()
+  opts.headers_file = tmp
+  vim.system(build_argv(opts), { text = true }, function(result)
+    vim.schedule(function()
+      local headers = {}
+      local fd = io.open(tmp, 'r')
+      if fd then
+        headers = fd:read('*a') or ''
+        fd:close()
+      end
+      os.remove(tmp)
+      if result.code ~= 0 then
+        cb({ code = result.code, error = 'Http.Curl', message = (result.stderr or ''):gsub('%s+$', '') }, nil)
+        return
+      end
+      local body, status = split_status(result.stdout or '')
+      local data, err = unwrap(body, status)
+      cb(err, data, headers)
+    end)
+  end)
+end
+
+--- Find the PTASession cookie in a raw Set-Cookie header dump.
+function M.ptasession_from_headers(headers)
+  if not headers then
+    return nil
+  end
+  for line in headers:gmatch('[^\r\n]+') do
+    local sc = line:match('^[Ss]et%-[Cc]ookie:%s*(.+)$')
+    if sc then
+      for part in sc:gmatch('[^;]+') do
+        local kv = vim.trim(part)
+        if kv:match('^PTASession=') then
+          return kv .. ';'
+        end
+      end
+    end
+  end
+  return nil
 end
 
 --- Async request. cb(err, data). opts: { method, path, query, body }
@@ -218,6 +270,79 @@ function M.request_sync(opts)
   end
   local body, status = split_status(result.stdout or '')
   return unwrap(body, status)
+end
+
+-- ---------------------------------------------------------------------------
+-- login flows
+-- ---------------------------------------------------------------------------
+
+--- Account/password login (pintia web 登录接口).
+--- account may be an e-mail address or a phone number; cb(err, user, cookie).
+function M.login_password(account, password, cb)
+  local body = { password = password, rememberMe = true }
+  if account:find('@', 1, true) then
+    body.email = account
+  else
+    body.phone = account
+  end
+  M.request_with_headers({ method = 'POST', path = M.passport_url .. '/api/users/sessions', body = body, no_cookie = true }, function(err, data, headers)
+    if err then
+      if err.message == 'Wrong Captcha' or (err.error or ''):find('GATEWAY') then
+        cb({ error = 'Captcha', message = '拼题A 登录接口要求极验验证码（Geetest），外部客户端无法绕过；请改用「微信扫码」或「Cookie」登录' })
+        return
+      end
+      cb(err)
+      return
+    end
+    local cookie = M.ptasession_from_headers(headers)
+    if not cookie then
+      cb({ error = 'Api.InvalidResponse', message = '响应中没有 PTASession cookie' })
+      return
+    end
+    cb(nil, data and data.user, cookie)
+  end)
+end
+
+--- WeChat QR login: step 1, fetch the authorize url + state.
+function M.wechat_auth_url(cb)
+  M.request({ path = M.passport_url .. '/api/oauth/wechat/official-account/auth-url', no_cookie = true }, cb)
+end
+
+--- WeChat QR login: step 2, poll state.
+function M.wechat_state(state, cb)
+  M.request({ path = M.passport_url .. '/api/oauth/wechat/official-account/state/' .. state, no_cookie = true }, cb)
+end
+
+--- WeChat QR login: step 3, fetch scanned user (needs exact casing path:
+--- /api/oauth/wechat/state/{state}/user).
+function M.wechat_user(state, cb)
+  M.request({ path = M.passport_url .. '/api/oauth/wechat/state/' .. state .. '/user', no_cookie = true }, function(err, data)
+    if err then
+      cb(err)
+      return
+    end
+    cb(nil, data and data.user)
+  end)
+end
+
+--- WeChat QR login: step 4, create the session; cb(err, user, cookie).
+function M.wechat_login_users(state, userId, cb)
+  M.request_with_headers({
+    method = 'POST',
+    path = M.passport_url .. '/api/users/sessions/state/' .. state .. '/login_users/' .. userId,
+    no_cookie = true,
+  }, function(err, data, headers)
+    if err then
+      cb(err)
+      return
+    end
+    local cookie = M.ptasession_from_headers(headers)
+    if not cookie then
+      cb({ error = 'Api.InvalidResponse', message = '响应中没有 PTASession cookie' })
+      return
+    end
+    cb(nil, data and data.user, cookie)
+  end)
 end
 
 -- ---------------------------------------------------------------------------

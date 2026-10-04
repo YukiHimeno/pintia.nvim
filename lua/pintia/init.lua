@@ -101,6 +101,103 @@ end
 -- ---------------------------------------------------------------------------
 
 function M.login()
+  vim.ui.select({
+    '微信扫码登录',
+    '账号密码登录',
+    'PTASession cookie 登录',
+  }, { prompt = '选择登录方式:' }, function(choice)
+    if choice == '微信扫码登录' then
+      M.login_wechat()
+    elseif choice == '账号密码登录' then
+      M.login_password()
+    elseif choice == 'PTASession cookie 登录' then
+      M.login_cookie()
+    end
+  end)
+end
+
+function M.login_password()
+  vim.ui.input({ prompt = '拼题A 账号（邮箱或手机号）: ' }, function(account)
+    if account == nil or vim.trim(account) == '' then
+      return
+    end
+    local password = vim.fn.inputsecret('密码: ')
+    if password == '' then
+      return
+    end
+    vim.notify('pintia: 登录中…', vim.log.levels.INFO)
+    api.login_password(vim.trim(account), password, function(err, user, cookie)
+      if err then
+        vim.notify('pintia 登录失败: ' .. (err.message or err.error), vim.log.levels.ERROR)
+        return
+      end
+      api.save_session({ cookie = cookie, id = user and user.id, nickname = user and (user.nickname or user.email) })
+      vim.notify(string.format('pintia 已登录：%s', (user and (user.nickname or user.email)) or '账号'), vim.log.levels.INFO)
+    end)
+  end)
+end
+
+function M.login_wechat()
+  api.wechat_auth_url(function(err, auth)
+    if err or not auth or not auth.url then
+      vim.notify('pintia 获取微信登录链接失败: ' .. (err and (err.message or err.error) or ''), vim.log.levels.ERROR)
+      return
+    end
+    -- 终端里直接显示二维码（装了 qrencode 时），否则提示用户在浏览器打开
+    local qr_lines = nil
+    if vim.fn.executable('qrencode') == 1 then
+      local out = vim.fn.system({ 'qrencode', '-t', 'UTF8', '-m', '1', auth.url })
+      if vim.v.shell_error == 0 then
+        qr_lines = vim.split(out:gsub('\n$', ''), '\n', { plain = true })
+      end
+    end
+    if qr_lines then
+      float.open({ title = '微信扫码登录 · q 关闭', lines = qr_lines, width = 72, height = math.min(#qr_lines + 2, 30), wrap = false })
+    else
+      vim.notify('pintia: 请用微信扫码打开此链接登录:\n' .. auth.url, vim.log.levels.INFO)
+    end
+
+    local deadline = os.time() + 120
+    local function tick()
+      api.wechat_state(auth.state, function(serr, state)
+        if serr then
+          vim.notify('pintia 查询微信登录状态失败: ' .. (serr.message or serr.error), vim.log.levels.WARN)
+          return
+        end
+        local status = state and state.status
+        if status == 'SUCCESSFUL' then
+          api.wechat_user(auth.state, function(uerr, user)
+            if uerr or not user or not user.id then
+              vim.notify('pintia 获取微信用户失败', vim.log.levels.ERROR)
+              return
+            end
+            api.wechat_login_users(auth.state, user.id, function(lerr, info, cookie)
+              if lerr then
+                vim.notify('pintia 微信登录失败: ' .. (lerr.message or lerr.error), vim.log.levels.ERROR)
+                return
+              end
+              api.save_session({ cookie = cookie, id = info and info.id, nickname = info and (info.nickname or info.email), loginMethod = 'WeChat' })
+              vim.notify(string.format('pintia 已登录：%s（微信扫码）', (info and (info.nickname or info.email)) or user.nickname or user.id), vim.log.levels.INFO)
+            end)
+          end)
+          return
+        end
+        if status == 'FAILURE' then
+          vim.notify('pintia 微信登录失败或已过期，请重试', vim.log.levels.ERROR)
+          return
+        end
+        if os.time() > deadline then
+          vim.notify('pintia 微信登录超时', vim.log.levels.WARN)
+          return
+        end
+        vim.defer_fn(tick, 2000)
+      end)
+    end
+    vim.defer_fn(tick, 2000)
+  end)
+end
+
+function M.login_cookie()
   vim.ui.input({ prompt = 'PTASession cookie（https://pintia.cn 登录后浏览器取到）: ' }, function(cookie)
     if cookie == nil or vim.trim(cookie) == '' then
       return

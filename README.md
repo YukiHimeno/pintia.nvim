@@ -74,7 +74,13 @@ require('pintia').setup({
 
 ## 登录
 
-`:PintiaLogin`，粘贴浏览器里的 `PTASession` cookie（登录 https://pintia.cn 后从开发者工具复制，可以只贴值）。会话保存到 `session.json`，下次启动直接可用。`:PintiaLogout` 退出。
+`:PintiaLogin` 弹出菜单，支持三种方式：
+
+1. **微信扫码登录**：终端直接显示二维码（需要 `qrencode`，否则打印网页链接），微信扫码确认后自动保存会话
+2. **账号密码登录**：邮箱/手机号 + 密码。注意拼题A 的登录接口强制极验验证码，外部客户端遇到时会提示改用微信/Cookie 方式
+3. **PTASession cookie 登录**：粘贴浏览器里的 cookie
+
+会话保存到 `session.json`，下次启动直接可用。`:PintiaLogout` 退出。
 
 ## 命令
 
