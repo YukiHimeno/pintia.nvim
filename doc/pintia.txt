@@ -1,0 +1,69 @@
+*pintia.txt*  Pintia 在 Neovim 里                  *pintia* *pintia.nvim*
+
+pintia.nvim 把拼题A（https://pintia.cn）搬进编辑器：浏览题集与题目、题面进
+buffer，提交代码到拼题A判题、服务端自定义输入测试，判题结果实时跟进。
+
+入口是浮动操作面板 `:Pintia`：一个命令进去，之后 j/k 移动、回车执行。面板不
+注册默认键位，想用快捷键自己绑：
+
+>lua
+    vim.keymap.set('n', '<leader>p', '<cmd>Pintia<cr>', { desc = 'pintia' })
+<
+
+==============================================================================
+配置                                                        *pintia.setup()*
+
+>lua
+    require('pintia').setup({
+      workdir = vim.fn.stdpath('data') .. '/pintia/workspace',
+      session_file = vim.fn.stdpath('data') .. '/pintia/session.json',
+      default_language = 'C++ (g++)',
+      poll_interval = 2000,     -- 判题轮询间隔（毫秒）
+      judge_timeout = 180,      -- 等待判题超时（秒）
+      picker = 'auto',          -- 'auto' | 'builtin' | 'ui'
+    })
+<
+
+:PintiaSetup 可以交互地修改并持久化到 stdpath('data')/pintia/config.json，
+优先级高于 setup()；清空某项即恢复默认。
+
+==============================================================================
+命令                                                      *pintia-commands*
+
+:Pintia                 浮动操作面板（推荐入口）          *:Pintia*
+:PintiaSetup            交互式设置（工作区目录 / 列表界面等） *:PintiaSetup*
+:PintiaLogin            登录（粘贴 PTASession cookie）       *:PintiaLogin*
+:PintiaLogout           退出登录                              *:PintiaLogout*
+:PintiaStatus           账号 / 工作区 / 样例状态              *:PintiaStatus*
+:PintiaProblemSets      题集选择器                            *:PintiaProblemSets*
+:PintiaProblems psID [name]  指定题集的题目列表               *:PintiaProblems*
+:PintiaSubmit [文件]    提交当前文件                          *:PintiaSubmit*
+:PintiaTest [输入文件]  服务端自定义输入测试                  *:PintiaTest*
+:PintiaWatch [sid]      监视判题结果                          *:PintiaWatch*
+:PintiaHealth           环境自检（curl / 编译器 / 会话）      *:PintiaHealth*
+
+命令前缀可选：把 command_prefix 设为 'PTA' 后全部以 :PTA* 注册。           *:PTA*
+
+==============================================================================
+工作区                                                 *pintia-workspace*
+
+题目拉取到 workdir 下：
+
+    <题集名>/<题目标签>-<题目标题>/
+      statement.md   题面（markdown）
+      meta.json      psID / pID / 语言 / 分值
+      samples/       样例输入输出
+      main.cpp       你的代码
+
+在工作区内任意位置打开文件，:PintiaSubmit / :PintiaTest / :PintiaWatch 都会
+自动找到 meta.json 对应的题目。
+
+==============================================================================
+说明                                                       *pintia-notes*
+
+- 需要 Neovim 0.10+ 与 curl。
+- 登录方式为粘贴 PTASession cookie（网页登录后从浏览器开发者工具获取）。
+- :PintiaTest 走自定义测试数据提交，与 vscode-pintia 的 Test 一致，不依赖
+  本地编译器。
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
