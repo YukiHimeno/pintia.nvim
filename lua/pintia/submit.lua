@@ -214,7 +214,13 @@ function M.run(file_path, mode, test_input, retried)
     win.set(log)
   end, function(err, result)
     if is_auth_error(err) and not retried then
-      log[#log] = '  需要登录…(:PintiaLogin)'
+      log[#log] = '  需要登录…'
+      win.set(log)
+      if require('pintia').try_auto_relogin() then
+        log[#log] = '  登录态失效，正在自动重新登录（需要完成验证码）…'
+      else
+        log[#log] = '  登录态失效，请 :PintiaLogin'
+      end
       win.set(log)
       return
     end

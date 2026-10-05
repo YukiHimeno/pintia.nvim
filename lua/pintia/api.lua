@@ -206,7 +206,11 @@ end
 
 --- Async request capturing response headers; cb(err, data, headers_text).
 function M.request_with_headers(opts, cb)
-  local tmp = vim.fn.tempname()
+  -- avoid vim.fn.tempname(): the caller may be in a fast event context.
+  -- Windows builds set TEMP/TMP instead of TMPDIR.
+  local dir = os.getenv('TMPDIR') or os.getenv('TEMP') or os.getenv('TMP') or '/tmp'
+  dir = dir:gsub('[\\/]+$', '')
+  local tmp = string.format('%s/pintia-headers-%d', dir, vim.uv.hrtime())
   opts.headers_file = tmp
   vim.system(build_argv(opts), { text = true }, function(result)
     vim.schedule(function()
@@ -277,9 +281,11 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Account/password login (pintia web 登录接口).
---- account may be an e-mail address or a phone number; cb(err, user, cookie).
-function M.login_password(account, password, cb)
-  local body = { password = password, rememberMe = true }
+--- account may be an e-mail address or a phone number.
+--- ticket/randStr come from the Tencent TCaptcha challenge (see M.captcha_ticket).
+--- cb(err, user, cookie).
+function M.login_password(account, password, ticket, randStr, cb)
+  local body = { password = password, rememberMe = true, ticket = ticket, randStr = randStr }
   if account:find('@', 1, true) then
     body.email = account
   else
@@ -288,7 +294,7 @@ function M.login_password(account, password, cb)
   M.request_with_headers({ method = 'POST', path = M.passport_url .. '/api/users/sessions', body = body, no_cookie = true }, function(err, data, headers)
     if err then
       if err.message == 'Wrong Captcha' or (err.error or ''):find('GATEWAY') then
-        cb({ error = 'Captcha', message = '拼题A 登录接口要求极验验证码（Geetest），外部客户端无法绕过；请改用「微信扫码」或「Cookie」登录' })
+        cb({ error = 'Captcha', message = '极验/腾讯验证码校验失败或已过期，请重试' })
         return
       end
       cb(err)
@@ -301,6 +307,135 @@ function M.login_password(account, password, cb)
     end
     cb(nil, data and data.user, cookie)
   end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Tencent TCaptcha relay (used to satisfy the web login's captcha requirement)
+-- ---------------------------------------------------------------------------
+
+local TCAPTCHA_APPID = '194593025'
+
+local function captcha_page()
+  return [[<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>拼题A 验证码</title>
+<style>body{font-family:sans-serif;text-align:center;padding:40px;background:#f5f5f5}#msg{margin-top:20px;color:#333}</style>
+<script src="https://turing.captcha.qcloud.com/TCaptcha.js"></script>
+</head><body>
+<h2>请完成验证码（拼题A 登录所需）</h2>
+<button id="btn" style="font-size:18px;padding:10px 24px">点击进行验证</button>
+<div id="msg"></div>
+<script>
+window.addEventListener('load', function() {
+  var btn = document.getElementById('btn');
+  var msg = document.getElementById('msg');
+  var captcha;
+  try {
+    captcha = new TencentCaptcha(']] .. TCAPTCHA_APPID .. [[', function(res) {
+      if (res.ret === 0) {
+        fetch('/done?ticket=' + encodeURIComponent(res.ticket || '') + '&randStr=' + encodeURIComponent(res.randstr || ''))
+          .then(function() {
+            document.body.innerHTML = '<h2>✅ 验证完成，请回到 Neovim</h2>';
+          });
+      } else if (res.ret === 2) {
+        msg.innerText = '已取消验证';
+      } else {
+        msg.innerText = '验证失败(' + (res.ret || '') + '): ' + (res.errorCode || 'unknown');
+      }
+    });
+  } catch (e) {
+    msg.innerText = '验证码加载失败: ' + e;
+  }
+  btn.addEventListener('click', function() { captcha && captcha.show(); });
+});
+</script></body></html>]]
+end
+
+local function url_decode(s)
+  return (s:gsub('+', ' '):gsub('%%(%x%x)', function(hex)
+    return string.char(tonumber(hex, 16))
+  end))
+end
+
+--- Open a browser window with just the captcha challenge and wait for the
+--- user to solve it. cb(err, ticket, randStr).
+function M.captcha_ticket(cb)
+  local server = vim.uv.new_tcp()
+  local ok, bind_err = server:bind('127.0.0.1', 0)
+  if not ok then
+    cb({ error = 'Server', message = '无法启动本地服务: ' .. tostring(bind_err) })
+    return
+  end
+  local addr = server:getsockname()
+  local port = addr and addr.port
+  local done = false
+  local function finish(err, ticket, randStr)
+    if done then
+      return
+    end
+    done = true
+    pcall(function() server:close() end)
+    -- uv callbacks run in a fast event context; defer user-facing work.
+    vim.schedule(function()
+      cb(err, ticket, randStr)
+    end)
+  end
+
+  server:listen(128, function(listen_err)
+    if listen_err then
+      finish({ error = 'Server', message = tostring(listen_err) })
+      return
+    end
+    local client = vim.uv.new_tcp()
+    server:accept(client)
+    local buf = ''
+    client:read_start(function(rerr, chunk)
+      if rerr or not chunk then
+        pcall(function() client:close() end)
+        return
+      end
+      buf = buf .. chunk
+      if not buf:find('\r\n\r\n', 1, true) then
+        return
+      end
+      local request_line = buf:match('^([^\r\n]+)') or ''
+      local path = request_line:match('^%S+%s+(%S+)') or '/'
+      local body, content_type
+      if path:sub(1, 6) == '/done?' then
+        local q = path:sub(7)
+        local ticket = q:match('ticket=([^&]*)')
+        local randStr = q:match('randStr=([^&]*)')
+        if ticket and randStr then
+          finish(nil, url_decode(ticket), url_decode(randStr))
+        end
+        body = '<html><body>ok</body></html>'
+        content_type = 'text/html'
+      else
+        body = captcha_page()
+        content_type = 'text/html; charset=utf-8'
+      end
+      local resp = 'HTTP/1.1 200 OK\r\nContent-Type: ' .. content_type .. '\r\nContent-Length: ' .. #body .. '\r\nConnection: close\r\n\r\n' .. body
+      client:write(resp, function()
+        pcall(function() client:close() end)
+      end)
+    end)
+  end)
+
+  local url = string.format('http://127.0.0.1:%d/captcha', port)
+  local opened = false
+  if vim.fn.has('mac') == 1 then
+    opened = pcall(vim.fn.jobstart, { 'open', url }, { detach = true })
+  elseif vim.fn.has('win32') == 1 then
+    opened = pcall(vim.fn.jobstart, { 'cmd', '/c', 'start', url }, { detach = true })
+  else
+    opened = pcall(vim.fn.jobstart, { 'xdg-open', url }, { detach = true })
+  end
+  if not opened then
+    vim.notify('pintia: 请手动在浏览器打开验证码页面: ' .. url, vim.log.levels.WARN)
+  end
+  vim.notify('pintia: 验证码页面已打开，请完成验证 (' .. url .. ')', vim.log.levels.INFO)
+  vim.defer_fn(function()
+    finish({ error = 'Timeout', message = '验证码验证超时' })
+  end, 300000)
 end
 
 --- WeChat QR login: step 1, fetch the authorize url + state.

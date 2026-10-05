@@ -125,16 +125,71 @@ function M.login_password()
     if password == '' then
       return
     end
-    vim.notify('pintia: 登录中…', vim.log.levels.INFO)
-    api.login_password(vim.trim(account), password, function(err, user, cookie)
-      if err then
-        vim.notify('pintia 登录失败: ' .. (err.message or err.error), vim.log.levels.ERROR)
+    vim.notify('pintia: 请在浏览器中完成验证码…', vim.log.levels.INFO)
+    api.captcha_ticket(function(cerr, ticket, randStr)
+      if cerr then
+        vim.notify('pintia 验证码失败: ' .. (cerr.message or cerr.error), vim.log.levels.ERROR)
         return
       end
-      api.save_session({ cookie = cookie, id = user and user.id, nickname = user and (user.nickname or user.email) })
-      vim.notify(string.format('pintia 已登录：%s', (user and (user.nickname or user.email)) or '账号'), vim.log.levels.INFO)
+      api.login_password(vim.trim(account), password, ticket, randStr, function(err, user, cookie)
+        if err then
+          vim.notify('pintia 登录失败: ' .. (err.message or err.error), vim.log.levels.ERROR)
+          return
+        end
+        -- remember the credentials + method so a later session expiry can
+        -- re-login automatically (asks for the captcha again in a browser).
+        api.save_session({
+          cookie = cookie,
+          id = user and user.id,
+          nickname = user and (user.nickname or user.email),
+          loginMethod = 'password',
+          account = vim.trim(account),
+          password = password,
+        })
+        M._auto_relogin_attempted = false
+        vim.notify(string.format('pintia 已登录：%s', (user and (user.nickname or user.email)) or '账号'), vim.log.levels.INFO)
+      end)
     end)
   end)
+end
+
+--- When the cookie expired but the user last signed in with account/password,
+--- try to re-login automatically: open the captcha in a browser, then retry
+--- the same credentials. Returns true when a re-login was triggered (callers
+--- should retry their original request afterwards).
+function M.try_auto_relogin()
+  if M._auto_relogin_attempted then
+    return false
+  end
+  local s = api.load_session()
+  if not s or s.loginMethod ~= 'password' or not s.account or not s.password then
+    return false
+  end
+  M._auto_relogin_attempted = true
+  vim.notify('pintia: 登录态已失效，需要重新完成验证码（浏览器窗口已打开）…', vim.log.levels.WARN)
+  api.captcha_ticket(function(cerr, ticket, randStr)
+    if cerr then
+      vim.notify('pintia 自动重登失败: ' .. (cerr.message or cerr.error), vim.log.levels.ERROR)
+      return
+    end
+    api.login_password(s.account, s.password, ticket, randStr, function(err, user, cookie)
+      if err then
+        vim.notify('pintia 自动重登失败: ' .. (err.message or err.error), vim.log.levels.ERROR)
+        return
+      end
+      api.save_session({
+        cookie = cookie,
+        id = user and user.id,
+        nickname = user and (user.nickname or user.email),
+        loginMethod = 'password',
+        account = s.account,
+        password = s.password,
+      })
+      M._auto_relogin_attempted = false
+      vim.notify(string.format('pintia 已重新登录：%s', (user and (user.nickname or user.email)) or s.account), vim.log.levels.INFO)
+    end)
+  end)
+  return true
 end
 
 function M.login_wechat()
@@ -216,7 +271,7 @@ function M.login_cookie()
         vim.notify('pintia 登录失败: cookie 无效或已过期', vim.log.levels.ERROR)
         return
       end
-      api.save_session({ cookie = cookie, id = user.id, nickname = user.nickname })
+      api.save_session({ cookie = cookie, id = user.id, nickname = user.nickname, loginMethod = 'Cookie' })
       vim.notify(string.format('pintia 已登录：%s', user.nickname or user.email or user.id), vim.log.levels.INFO)
     end)
   end)
@@ -234,6 +289,10 @@ function M.status()
   local me, err = api.request_sync({ path = api.passport_url .. '/api/u/current' })
   if not session or err then
     lines[#lines + 1] = '账号: 未登录（:PintiaLogin）'
+    if err and session then
+      -- session present but rejected: if it was a password session, auto-relogin
+      M.try_auto_relogin()
+    end
   else
     local user = me and me.user
     lines[#lines + 1] = string.format('账号: %s（%s）', session.nickname or (user and user.nickname) or '?', session.id or (user and user.id) or '')

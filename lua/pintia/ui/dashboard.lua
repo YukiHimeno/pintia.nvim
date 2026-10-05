@@ -215,6 +215,9 @@ function M.open(actions)
   api.current_user(function(err, user)
     account.logged_in = (err == nil and user ~= nil)
     account.name = account.logged_in and (user.nickname or user.email or tostring(user.id)) or '未登录（回车「登录」）'
+    if err ~= nil and api.load_session() then
+      require('pintia').try_auto_relogin()
+    end
     if not vim.api.nvim_buf_is_valid(buf) then
       return
     end
