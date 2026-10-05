@@ -283,10 +283,18 @@ local function pull_and_open(psID, pID, psName)
     statement.open(vim.fn.fnamemodify(result.dir, ':t'), result.meta.title, result.markdown)
     local source = workspace.find_source(result.dir)
     if not source then
-      source = result.dir .. '/main.cpp'
+      local ext_map = { GCC = 'c', CLANG = 'c', GXX = 'cpp', CLANGXX = 'cpp', JAVAC = 'java', PYTHON3 = 'py', GO = 'go' }
+      local ext = ext_map[result.meta.compiler] or 'cpp'
+      source = result.dir .. '/main.' .. ext
       local fd = io.open(source, 'w')
       if fd then
-        fd:write('#include <iostream>\nusing namespace std;\n\nint main() {\n    return 0;\n}\n')
+        if result.meta.type == 'CODE_COMPLETION' then
+          fd:write('// 函数题：只写下面要求的函数即可，不要写 main。\n// 本地测试时会自动嵌入裁判测试程序样例。\n')
+        elseif ext == 'c' then
+          fd:write('#include <stdio.h>\n\nint main() {\n    return 0;\n}\n')
+        else
+          fd:write('#include <iostream>\nusing namespace std;\n\nint main() {\n    return 0;\n}\n')
+        end
         fd:close()
       end
     end
@@ -321,32 +329,33 @@ function M.problems(psID, psName)
     M.problem_sets()
     return
   end
-  local function fetch(page, cb)
-    api.problem_list(psID, page - 1, 200, function(err, items)
-      if err then
-        vim.notify('pintia: ' .. (err.message or err.error), vim.log.levels.ERROR)
-        return
-      end
-      local out = {}
-      for _, row in ipairs(items or {}) do
+  -- Fetch both programming and code-completion problems, then show them
+  -- together (the set may also have other types, ignored for coding work).
+  local types = { 'PROGRAMMING', 'CODE_COMPLETION' }
+  local results = {}
+  local done = 0
+  local function finalize()
+    done = done + 1
+    if done < #types then
+      return
+    end
+    local items = {}
+    for _, problem_type in ipairs(types) do
+      for _, row in ipairs(results[problem_type] or {}) do
         local mark = row.problemStatus == 'ACCEPTED' and '✓' or ' '
-        out[#out + 1] = {
-          label = string.format('%s %-6s %s  %d分', mark, row.label or '?', vim.trim(row.title or ''), row.score or 0),
+        local tag = problem_type == 'CODE_COMPLETION' and '函数题' or '编程题'
+        items[#items + 1] = {
+          label = string.format('%s [%s] %-6s %s  %d分', mark, tag, row.label or '?', vim.trim(row.title or ''), row.score or 0),
           data = { psID = psID, pID = row.id, label = row.label, psName = psName },
         }
       end
-      -- one page is enough for the bundled picker unless the set is huge
-      cb(out, 1)
-    end)
-  end
-  fetch(1, function(items)
+    end
     picker.select({
       title = (psName or psID) .. ' · 题目',
       hint = '输入模糊过滤 · <CR> 拉取工作区 · <C-o> 只看题面',
       items = items,
       width = 96,
       height = 24,
-      fetch_page = nil,
       on_select = function(item)
         pull_and_open(item.data.psID, item.data.pID, item.data.psName)
       end,
@@ -356,7 +365,17 @@ function M.problems(psID, psName)
       end,
       secondary_label = '<C-o> 只看题面',
     })
-  end)
+  end
+  for _, problem_type in ipairs(types) do
+    api.problem_list(psID, 0, 200, function(err, rows)
+      if not err and rows then
+        results[problem_type] = rows
+      else
+        results[problem_type] = {}
+      end
+      finalize()
+    end, problem_type)
+  end
 end
 
 function M.problem_sets()
@@ -389,34 +408,151 @@ end
 -- test & submit
 -- ---------------------------------------------------------------------------
 
---- Run the current file against a sample (default 1st) or custom input on the
---- server, exactly like vscode-pintia's "Test".
-function M.test(input_path)
+--- Compose a complete program for a function (CODE_COMPLETION) problem:
+--- the judge driver with the user's code embedded.
+local function build_completion_source(driver, user_code)
+  local markers = { '你的代码将被嵌在这里', '你的代码', 'YOUR CODE' }
+  for _, m in ipairs(markers) do
+    local s, e = driver:find(m, 1, true)
+    if s then
+      -- replace the whole comment block containing the marker
+      local cs = 1
+      local pos = 1
+      while true do
+        local p = driver:find('/*', pos, true)
+        if not p or p >= s then
+          break
+        end
+        cs = p
+        pos = p + 2
+      end
+      local ce = driver:find('*/', e, true)
+      if ce then
+        return driver:sub(1, cs - 1) .. user_code .. driver:sub(ce + 2)
+      end
+      return driver:sub(1, s - 1) .. user_code .. driver:sub(e + #m)
+    end
+  end
+  -- no marker: insert the user's code just before main
+  local main_pos = driver:find('int main', 1, true) or driver:find('public static void main', 1, true)
+  if main_pos then
+    return driver:sub(1, main_pos - 1) .. user_code .. '\n\n' .. driver:sub(main_pos)
+  end
+  return driver .. '\n' .. user_code
+end
+
+local function compiler_ext(compiler)
+  local map = { GCC = 'c', CLANG = 'c', GXX = 'cpp', CLANGXX = 'cpp', JAVAC = 'java',
+    PYTHON3 = 'py', PYTHON2 = 'py', GO = 'go', NODE = 'js', RUST = 'rs', KOTLIN = 'kt' }
+  return map[compiler] or 'cpp'
+end
+
+--- Local test: run the current file against the workspace samples with a
+--- local compiler/interpreter (samples are pulled with :PintiaProblemSets /
+--- workspace pull). Function problems are tested through their judge driver.
+function M.test()
   local ws = workspace.find(vim.api.nvim_buf_get_name(0)) or workspace.find(vim.fn.getcwd())
   if not ws then
-    vim.notify('pintia: 当前目录不在题目工作区（先 :PintiaPull）', vim.log.levels.WARN)
+    vim.notify('pintia: 当前目录不在题目工作区（先 :PintiaProblemSets 拉题）', vim.log.levels.WARN)
     return
   end
 
-  local test_input
-  if input_path and input_path ~= '' then
-    local fd = io.open(input_path, 'r')
-    test_input = fd and fd:read('*a') or nil
-    if fd then fd:close() end
-    if not test_input then
-      vim.notify('pintia: 读不到输入文件 ' .. input_path, vim.log.levels.ERROR)
-      return
-    end
-  else
-    local samples = workspace.read_samples(ws.dir)
-    if #samples == 0 then
-      vim.notify('pintia: 工作区没有 samples/，传一个输入文件：:PintiaTest path/to/input', vim.log.levels.WARN)
-      return
-    end
-    test_input = samples[1].input
+  local file = workspace.find_source(ws.dir)
+  if not file then
+    vim.notify('pintia: 工作区内没有源码文件', vim.log.levels.WARN)
+    return
   end
 
-  submit.run(nil, 'test', test_input and (test_input:match('\n$') and test_input or (test_input .. '\n')) or '')
+  local samples = workspace.read_samples(ws.dir)
+  if #samples == 0 then
+    vim.notify('pintia: 工作区没有 samples/（重新拉题会带上样例）', vim.log.levels.WARN)
+    return
+  end
+
+  -- The runner compiles the file from disk, so unsaved edits must land first.
+  local saved = workspace.save_modified(ws.dir, file)
+
+  local build_dir = ws.dir .. '/.pintia-build'
+  vim.fn.mkdir(build_dir, 'p')
+
+  local target = file
+  local note = ''
+  if ws.meta.type == 'CODE_COMPLETION' then
+    if not ws.meta.driver then
+      vim.notify('pintia: 题目缺少裁判测试程序样例，无法本地测试（可对照网页做）', vim.log.levels.ERROR)
+      return
+    end
+    local fd = io.open(file, 'r')
+    local source = fd and fd:read('*a') or ''
+    if fd then fd:close() end
+    target = string.format('%s/completion.%s', build_dir, compiler_ext(ws.meta.compiler))
+    local out = io.open(target, 'w')
+    out:write(build_completion_source(ws.meta.driver, source))
+    out:close()
+    note = '（函数题：已把你的代码嵌入裁判测试程序）'
+  end
+
+  local runner = require('pintia.runner')
+  local language = runner.language_of(target, vim.bo.filetype)
+  if not language then
+    local lab = (config.get().default_language or ''):lower()
+    language = lab:find('c%+%+') and 'C++' or lab:find('python') and 'Python' or lab:find('java') and 'Java' or lab:find('php') and 'PHP' or lab:find('go') and 'Go' or lab:find('c') and 'C' or nil
+  end
+
+  local log = { string.format('本地测试 %s · %s %s', vim.fn.fnamemodify(file, ':t'), ws.meta.label or '', ws.meta.title or '') }
+  if note ~= '' then
+    log[#log + 1] = note
+  end
+  log[#log + 1] = string.format('样例 %d 组', #samples)
+  if #saved > 0 then
+    log[#log + 1] = '已保存 ' .. table.concat(vim.tbl_map(function(p) return vim.fn.fnamemodify(p, ':t') end, saved), ' ')
+  end
+  log[#log + 1] = ''
+  local win = float.open({ title = 'pintia 本地测试', lines = log, width = 88, height = 18 })
+
+  runner.run({
+    ws_dir = ws.dir,
+    file_path = target,
+    language = language,
+    tests = samples,
+    time_limit = math.max((tonumber(ws.meta.timeLimit) or 1000) / 1000, 1),
+  }, {
+    on_compile = function()
+      log[#log + 1] = '  编译中…'
+      win.set(log)
+    end,
+    on_result = function(_, entry)
+      log[#log] = string.format('  %s %s  (%d ms)', entry.pass and '✓' or '✗', entry.name, entry.elapsed_ms)
+      if entry.error then
+        log[#log + 1] = '    ' .. entry.error
+      elseif not entry.pass then
+        log[#log + 1] = '    期望: ' .. tostring(entry.expected):sub(1, 160)
+        log[#log + 1] = '    实际: ' .. tostring(entry.actual):sub(1, 160)
+      end
+      log[#log + 1] = ''
+      win.set(log)
+    end,
+    on_done = function(results, compile_output)
+      if compile_output then
+        log[#log + 1] = '  编译失败：'
+        for _, line in ipairs(vim.split(compile_output, '\n', { plain = true })) do
+          log[#log + 1] = '    ' .. line
+        end
+        win.set(log)
+        return
+      end
+      local passed = 0
+      for _, entry in ipairs(results) do
+        if entry.pass then
+          passed = passed + 1
+        end
+      end
+      log[#log + 1] = string.format('  %d/%d 通过', passed, #results)
+      win.set(log)
+      vim.notify(string.format('pintia: 本地测试 %d/%d 通过', passed, #results),
+        passed == #results and vim.log.levels.INFO or vim.log.levels.WARN)
+    end,
+  })
 end
 
 function M.submit_cmd(file)

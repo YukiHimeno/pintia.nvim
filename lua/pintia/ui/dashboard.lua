@@ -40,7 +40,7 @@ local function build_rows(actions, account)
     action('⚿  登录                     登录 Pintia', actions.login)
   end
   action('◈  题集                     浏览题集与题目', actions.problem_sets)
-  action('▷  服务端测试             自定义输入跑在拼题A上', actions.test)
+  action('▷  本地测试                 样例跑在本地编译器上', actions.test)
   action('⇧  提交                     当前文件提交并跟踪判题', actions.submit)
   action('◷  盯判题                   监视最近一次提交', actions.watch)
   action('⚙  设置                     工作区目录 / 列表界面 / 超时等', actions.settings)

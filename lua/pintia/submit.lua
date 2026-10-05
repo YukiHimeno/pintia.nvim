@@ -99,11 +99,12 @@ function M.submit(opts, progress, cb)
       return
     end
 
+    local detail_field = (ws.meta.type == 'CODE_COMPLETION') and 'codeCompletionSubmissionDetail' or 'programmingSubmissionDetail'
     local detail = {
       problemId = '0',
       problemSetProblemId = ws.meta.pID,
-      programmingSubmissionDetail = { compiler = compiler, program = source },
     }
+    detail[detail_field] = { compiler = compiler, program = source }
     local custom = opts.custom_input ~= nil
     if custom then
       detail.customTestData = { hasCustomTestData = true, content = opts.custom_input }

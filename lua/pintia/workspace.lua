@@ -30,6 +30,29 @@ function M.dir_for(problem_set_name, problem)
   return string.format('%s/%s/%s%s', root, set_dir, label, slug(problem.title))
 end
 
+--- Extract the judge driver （裁判测试程序样例） from a code-completion
+--- problem's content: the code block right after that heading.
+function M.extract_driver(problem)
+  local content = problem and problem.content or ''
+  local _, e = content:find('裁判测试程序样例')
+  local start = e and (content:find('```', e) or 0) + 3 or 0
+  if start > 3 then
+    -- skip the language tag on the fence line
+    local _, eol = content:find('\n', start)
+    local block_end = content:find('```', eol and (eol + 1) or start)
+    if eol and block_end then
+      return vim.trim(content:sub(eol + 1, block_end - 1))
+    end
+  end
+  -- fallback: any fenced block containing a main function
+  for lang, code in content:gmatch('```[%w+#]*\n(.-)```') do
+    if code:find('int main', 1, true) or code:find('public static void main', 1, true) then
+      return vim.trim(code)
+    end
+  end
+  return nil
+end
+
 --- meta.json content: everything submit/test/poll needs.
 function M.meta_for(problem, problem_set_name, url)
   local cfg = problem.problemConfig or {}
@@ -43,8 +66,10 @@ function M.meta_for(problem, problem_set_name, url)
     title = vim.trim(problem.title or ''),
     type = problem.type or 'PROGRAMMING',
     score = problem.score,
+    compiler = problem.compiler,
     timeLimit = prog.timeLimit,
     memoryLimit = prog.memoryLimit,
+    driver = problem.type == 'CODE_COMPLETION' and M.extract_driver(problem) or nil,
     problemSetId = problem.problemSetId,
     url = url,
     pulledAt = os.date('!%Y-%m-%dT%H:%M:%SZ'),

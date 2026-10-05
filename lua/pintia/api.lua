@@ -409,11 +409,12 @@ function M.problem_summaries(psID, cb)
   end)
 end
 
---- Programming problems of a problem set, one page (0-based) of at most `limit`.
-function M.problem_list(psID, page, limit, cb)
+--- Problems of a problem set, one page (0-based) of at most `limit`.
+--- problem_type: PROGRAMMING, CODE_COMPLETION, MULTIPLE_FILE, ...
+function M.problem_list(psID, page, limit, cb, problem_type)
   M.request({
     path = '/api/problem-sets/' .. psID .. '/exam-problem-list',
-    query = { problem_type = 'PROGRAMMING', page = page or 0, limit = limit or 200 },
+    query = { problem_type = problem_type or 'PROGRAMMING', page = page or 0, limit = limit or 200 },
   }, function(err, data)
     if err then
       cb(err)

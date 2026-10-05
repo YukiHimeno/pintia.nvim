@@ -23,7 +23,7 @@
 面板分四段：操作（题集、提交等入口）、当前工作区信息、最近题目、账号状态。`j/k` 移动，回车执行，`q` 关闭。
 
 - 题集/题目列表里回车 = 拉取到工作区：题面 buffer + 源码 + `tcd` 到题目目录；`<C-o>` 只看题面
-- 服务端测试和提交在浮动窗里跟进，未登录时先 `:PintiaLogin`
+- 本地测试用本地编译器跑样例，提交走拼题A云端判题；未登录时先 `:PintiaLogin`
 - 最近题目直接回车就能回到对应工作区
 - 提交/测试前会自动保存工作区里未保存的修改：就地写入，不动窗口布局、标签页和焦点
 
@@ -94,7 +94,7 @@ require('pintia').setup({
 | `:PintiaStatus` | 账号、工作区、样例、源码一览 |
 | `:PintiaProblemSets` | 题集选择器 |
 | `:PintiaProblems <psID> [名称]` | 指定题集的题目列表 |
-| `:PintiaTest [输入文件]` | 服务端样例/自定义输入测试 |
+| `:PintiaTest` | 本地编译器跑样例（函数题自动嵌入裁判程序） |
 | `:PintiaSubmit [文件]` | 提交当前文件并跟踪判题 |
 | `:PintiaWatch [submissionId]` | 监视判题（缺省盯当前题最近一次提交） |
 | `:PintiaHealth` | 环境自检（curl / 编译器 / 会话） |
@@ -116,7 +116,7 @@ require('pintia').setup({
 ## 说明
 
 - 会话走站点自身的 REST API（与网页前端同一套），登录后所有请求带 `PTASession` cookie
-- `:PintiaTest` 走自定义测试数据提交（与 vscode-pintia 的 Test 一致），不依赖本地编译器
+- `:PintiaTest` 在本地编译并跑 samples/；函数题（CODE_COMPLETION）会把你的代码嵌入裁判测试程序样例后编译运行。判题提交仍走拼题A云端。
 - 判题码 `WAITING`/`JUDGING`（或 `queued >= 0`）表示仍在评测，轮询间隔与超时可在 `opts` 里调整
 
 ## 致谢

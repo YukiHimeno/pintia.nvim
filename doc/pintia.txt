@@ -1,7 +1,7 @@
 *pintia.txt*  Pintia 在 Neovim 里                  *pintia* *pintia.nvim*
 
 pintia.nvim 把拼题A（https://pintia.cn）搬进编辑器：浏览题集与题目、题面进
-buffer，提交代码到拼题A判题、服务端自定义输入测试，判题结果实时跟进。
+buffer，本地编译器跑样例，提交代码到拼题A云端判题、判题结果实时跟进。
 
 入口是浮动操作面板 `:Pintia`：一个命令进去，之后 j/k 移动、回车执行。面板不
 注册默认键位，想用快捷键自己绑：
@@ -38,7 +38,7 @@ buffer，提交代码到拼题A判题、服务端自定义输入测试，判题�
 :PintiaProblemSets      题集选择器                            *:PintiaProblemSets*
 :PintiaProblems psID [name]  指定题集的题目列表               *:PintiaProblems*
 :PintiaSubmit [文件]    提交当前文件                          *:PintiaSubmit*
-:PintiaTest [输入文件]  服务端自定义输入测试                  *:PintiaTest*
+:PintiaTest        本地编译器跑样例（函数题嵌裁判程序） *:PintiaTest*
 :PintiaWatch [sid]      监视判题结果                          *:PintiaWatch*
 :PintiaHealth           环境自检（curl / 编译器 / 会话）      *:PintiaHealth*
 
@@ -63,7 +63,6 @@ buffer，提交代码到拼题A判题、服务端自定义输入测试，判题�
 
 - 需要 Neovim 0.10+ 与 curl。
 - 登录方式为粘贴 PTASession cookie（网页登录后从浏览器开发者工具获取）。
-- :PintiaTest 走自定义测试数据提交，与 vscode-pintia 的 Test 一致，不依赖
-  本地编译器。
+- :PintiaTest 在本地编译并跑 workspace 的 samples/，函数题会自动嵌入裁判测试程序。
 
  vim:tw=78:ts=8:noet:ft=help:norl:
