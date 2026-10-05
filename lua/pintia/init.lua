@@ -736,6 +736,12 @@ function M.preview()
     vim.cmd('MarkdownPreview')
     return
   end
+  -- OXY2DEV/markview.nvim: render in the statement buffer itself
+  local nok, mactions = pcall(require, 'markview.actions')
+  if nok and mactions and mactions.attach then
+    mactions.attach(vim.api.nvim_get_current_buf())
+    return
+  end
   -- toppair/peek.nvim
   local ok, peek = pcall(require, 'peek')
   if ok and peek.open then

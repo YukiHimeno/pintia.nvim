@@ -191,7 +191,8 @@ function M.open(key, title, markdown)
   local bufname = 'pintia://problem/' .. key
   local bufnr = vim.fn.bufnr('^' .. vim.fn.escape(bufname, '\\') .. '$')
   if bufnr == -1 then
-    bufnr = vim.api.nvim_create_buf(false, true)
+    -- not a 'scratch' buffer: markview/render-markdown ignore buftype=nofile
+    bufnr = vim.api.nvim_create_buf(false, false)
     vim.api.nvim_buf_set_name(bufnr, bufname)
   end
 
@@ -202,7 +203,6 @@ function M.open(key, title, markdown)
   vim.bo[bufnr].bufhidden = 'hide'
   vim.bo[bufnr].filetype = 'markdown'
   vim.bo[bufnr].swapfile = false
-  vim.bo[bufnr].spell = false
 
   vim.api.nvim_buf_set_keymap(bufnr, 'n', 'q', '', {
     callback = function()
@@ -217,6 +217,7 @@ function M.open(key, title, markdown)
   if vim.api.nvim_buf_get_name(0) == bufname then
     vim.wo[0].conceallevel = 2
     vim.wo[0].concealcursor = 'nc'
+    vim.wo[0].spell = false
   end
   return bufnr
 end
