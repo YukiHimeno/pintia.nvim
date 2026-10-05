@@ -37,6 +37,7 @@ local COMMAND_SPECS = {
   { suffix = 'Test', desc = 'pintia: 服务端测试（自定义输入）', nargs = '*' },
   { suffix = 'Submit', desc = 'pintia: 提交当前文件', nargs = '*' },
   { suffix = 'Watch', desc = 'pintia: 监视判题结果', nargs = '*' },
+  { suffix = 'Preview', desc = 'pintia: 题面预览（markdown + LaTeX）' },
   { suffix = 'Health', desc = 'pintia: 环境自检' },
 }
 
@@ -62,6 +63,8 @@ local function dispatch(suffix)
       M.submit_cmd(args.fargs[1])
     elseif suffix == 'Watch' then
       M.watch(args.fargs[1])
+    elseif suffix == 'Preview' then
+      M.preview()
     elseif suffix == 'Health' then
       M.health()
     end
@@ -329,6 +332,59 @@ local function open_problem(psID, pID, psName)
   end)
 end
 
+-- Pair each problem's statement buffer with its source buffer, so closing
+-- one closes the other ("同进同退"). Keyed by workspace dir, so several
+-- problems can be open at once without interfering with each other.
+local open_pairs = {}
+
+local function close_bufnr_quietly(bufnr, force)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  pcall(vim.api.nvim_buf_delete, bufnr, { force = force or false })
+end
+
+local function link_statement_source(ws_dir, statement_buf, source_path)
+  if not statement_buf or not vim.api.nvim_buf_is_valid(statement_buf) then
+    return
+  end
+  local source_buf = nil
+  if source_path and vim.fn.filereadable(source_path) == 1 then
+    source_buf = vim.fn.bufadd(source_path)
+    vim.fn.bufload(source_buf)
+  end
+  open_pairs[ws_dir] = { statement_buf = statement_buf, source_buf = source_buf }
+
+  vim.api.nvim_create_autocmd('BufDelete', {
+    buffer = statement_buf,
+    once = true,
+    callback = function()
+      local pair = open_pairs[ws_dir]
+      if pair and pair.source_buf and vim.api.nvim_buf_is_valid(pair.source_buf) then
+        if vim.bo[pair.source_buf].modified then
+          vim.notify('pintia: 源文件还有未保存的修改，已保留其缓冲区', vim.log.levels.WARN)
+        else
+          close_bufnr_quietly(pair.source_buf, true)
+        end
+      end
+      open_pairs[ws_dir] = nil
+    end,
+  })
+  if source_buf then
+    vim.api.nvim_create_autocmd('BufDelete', {
+      buffer = source_buf,
+      once = true,
+      callback = function()
+        local pair = open_pairs[ws_dir]
+        if pair and pair.statement_buf and vim.api.nvim_buf_is_valid(pair.statement_buf) then
+          close_bufnr_quietly(pair.statement_buf, true)
+        end
+        open_pairs[ws_dir] = nil
+      end,
+    })
+  end
+end
+
 --- Pull into the workspace and open the working files.
 local function pull_and_open(psID, pID, psName)
   workspace.pull(psID, pID, psName, function(err, result)
@@ -339,7 +395,7 @@ local function pull_and_open(psID, pID, psName)
     vim.notify(string.format('pintia: 已拉取 %s → %s', result.meta.title, result.dir), vim.log.levels.INFO)
     history.record({ psID = psID, pID = pID, label = result.meta.label }, result.meta.title, result.dir)
 
-    statement.open(vim.fn.fnamemodify(result.dir, ':t'), result.meta.title, result.markdown)
+    local statement_buf = statement.open(vim.fn.fnamemodify(result.dir, ':t'), result.meta.title, result.markdown)
     local source = workspace.find_source(result.dir)
     if not source then
       local ext_map = { GCC = 'c', CLANG = 'c', GXX = 'cpp', CLANGXX = 'cpp', JAVAC = 'java', PYTHON3 = 'py', GO = 'go' }
@@ -361,6 +417,7 @@ local function pull_and_open(psID, pID, psName)
     if vim.fn.filereadable(source) == 1 then
       vim.cmd('split ' .. vim.fn.fnameescape(source))
     end
+    link_statement_source(result.dir, statement_buf, source)
   end)
 end
 
@@ -371,12 +428,13 @@ function M.open_workspace(ref)
   end
   local ws = workspace.find(vim.fn.getcwd())
   if ws and ws.meta.pID == ref.pID and ws.meta.psID == ref.psID then
-    statement.open(vim.fn.fnamemodify(ws.dir, ':t'), ws.meta.title, (function()
+    local statement_buf = statement.open(vim.fn.fnamemodify(ws.dir, ':t'), ws.meta.title, (function()
       local fd = io.open(ws.dir .. '/statement.md', 'r')
       local content = fd and fd:read('*a') or ''
       if fd then fd:close() end
       return content
     end)())
+    link_statement_source(ws.dir, statement_buf, workspace.find_source(ws.dir))
     return
   end
   pull_and_open(ref.psID, ref.pID, ref.psName)
@@ -666,6 +724,30 @@ end
 -- ---------------------------------------------------------------------------
 -- misc
 -- ---------------------------------------------------------------------------
+
+--- Render the current problem statement (markdown + LaTeX). Uses whatever
+--- markdown-preview / peek.nvim plugin is installed, otherwise tells the
+--- user what to install. For in-buffer rendering prefer markview.nvim or
+--- render-markdown.nvim (they auto-attach to the statement buffer's
+--- markdown filetype).
+function M.preview()
+  -- iamcco/markdown-preview.nvim
+  if vim.fn.exists(':MarkdownPreview') == 2 then
+    vim.cmd('MarkdownPreview')
+    return
+  end
+  -- toppair/peek.nvim
+  local ok, peek = pcall(require, 'peek')
+  if ok and peek.open then
+    peek.open()
+    return
+  end
+  vim.notify('pintia: 建议安装 markdown 预览插件获得题面渲染：\n'
+    .. '  - iamcco/markdown-preview.nvim（浏览器渲染，支持 KaTeX 公式）\n'
+    .. '  - toppair/peek.nvim（即时浏览器预览）\n'
+    .. '  - OXY2DEV/markview.nvim（buffer 内渲染，含 LaTeX）\n'
+    .. '  - MeanderingProgrammer/render-markdown.nvim（buffer 内渲染）', vim.log.levels.INFO)
+end
 
 function M.settings()
   require('pintia.ui.settings').open()

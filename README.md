@@ -97,9 +97,19 @@ require('pintia').setup({
 | `:PintiaTest` | 本地编译器跑样例（函数题自动嵌入裁判程序） |
 | `:PintiaSubmit [文件]` | 提交当前文件并跟踪判题 |
 | `:PintiaWatch [submissionId]` | 监视判题（缺省盯当前题最近一次提交） |
+| `:PintiaPreview` | 题面预览（markdown + LaTeX） |
 | `:PintiaHealth` | 环境自检（curl / 编译器 / 会话） |
 
+## 题面渲染
+
+题面 buffer 的 `filetype` 是 `markdown`，直接配第三方插件即可：
+
+- **buffer 内渲染**：`OXY2DEV/markview.nvim`（含 LaTeX 公式）、`MeanderingProgrammer/render-markdown.nvim`
+- **浏览器渲染**：`iamcco/markdown-preview.nvim` 或 `toppair/peek.nvim`，然后 `:PintiaPreview`（前者还需在 `MarkdownPreview` 的前端已通过 KaTeX 渲染公式）
+
 ## 工作区
+
+题面 buffer 和作答文件会一起打开、一起关闭；同时开多题时每对互不影响（以工作区目录为单位配对）。
 
 ```
 <workdir>/

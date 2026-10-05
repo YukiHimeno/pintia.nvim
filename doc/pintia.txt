@@ -41,6 +41,11 @@ buffer，本地编译器跑样例，提交代码到拼题A云端判题、判题�
 :PintiaTest        本地编译器跑样例（函数题嵌裁判程序） *:PintiaTest*
 :PintiaWatch [sid]      监视判题结果                          *:PintiaWatch*
 :PintiaHealth           环境自检（curl / 编译器 / 会话）      *:PintiaHealth*
+:PintiaPreview          题面预览（markdown + LaTeX）         *:PintiaPreview*
+
+题面的 markdown 和 LaTeX 公式渲染建议配合 markview.nvim /
+render-markdown.nvim（buffer 内）或 markdown-preview.nvim / peek.nvim
+（浏览器）使用。题面和作答文件同进同退，多题同时打开互不影响。
 
 命令前缀可选：把 command_prefix 设为 'PTA' 后全部以 :PTA* 注册。           *:PTA*
 
